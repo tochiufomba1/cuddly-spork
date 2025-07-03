@@ -7,7 +7,7 @@ class Config:
     SECRET_KEY = os.environ.get('SECRET_KEY')
     
     # Database
-    SQLALCHEMY_DATABASE_URI = "postgresql://postgres:Abd123baby321@localhost:5432/bookkeeper"     #os.environ.get('DATABASE_URL')
+    SQLALCHEMY_DATABASE_URI = os.environ.get('DATABASE_URL')
     
     # Web
     SESSION_COOKIE_HTTPONLY = os.environ.get('SESSION_COOKIE_HTTPONLY', 'True')
