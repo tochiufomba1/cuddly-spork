@@ -1,7 +1,7 @@
 from typing import Optional
 import sqlalchemy as sa
 import sqlalchemy.orm as so
-from app import db
+from . import db
 from werkzeug.security import generate_password_hash, check_password_hash
 from flask_login import UserMixin
 from datetime import timedelta, datetime, timezone
@@ -25,7 +25,7 @@ class Users(UserMixin, db.Model):
         self.password_hash = generate_password_hash(password)
     
     def check_password(self, password):
-        return check_password_hash(self.password_hash, password)
+        return check_password_hash(str(self.password_hash), password)
 
     def from_dict(self, data, new_user=False):
         for field in ['username', 'email']:
@@ -36,7 +36,7 @@ class Users(UserMixin, db.Model):
 
     def get_token(self, expires_in=3600):
         now = datetime.now(timezone.utc)
-        if self.token and self.token_expiration.astimezone(timezone.utc) > now + timedelta(seconds=60):
+        if self.token and self.token_expiration is not None and self.token_expiration.astimezone(timezone.utc) > now + timedelta(seconds=60):
             return self.token
         self.token = secrets.token_hex(16)
         self.token_expiration = now + timedelta(seconds=expires_in)
@@ -114,6 +114,7 @@ class UserTemplateAccess(db.Model):
     template_id: so.Mapped[int] = so.mapped_column(sa.ForeignKey(Template.id), primary_key=True, index=True)
     user_id: so.Mapped[int] = so.mapped_column(sa.ForeignKey(Users.id), primary_key=True, index=True)
     access_level: so.Mapped[Optional[str]] = so.mapped_column(sa.String(50))
+    # prediction_confidence: so.Mapped[float] = so.mapped_column(sa.Float(), default=0.7)
 
     # Reverse relationship back to Template
     # template = so.relationship("Template", back_populates="users")
@@ -167,4 +168,3 @@ class NewVendorRequests(db.Model):
     def __repr__(self):
         return f"<NewVendorRequests {self.id}>"
     
-

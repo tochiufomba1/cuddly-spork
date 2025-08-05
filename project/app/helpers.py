@@ -19,9 +19,12 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.ensemble import RandomForestClassifier
 
 
-from app import db, models
+from . import db, models, s3_client
 from sqlalchemy import func
 import fasttext
+
+import boto3
+from botocore.exceptions import ClientError
 
 def write_dict_to_file(data, filename):
     """Writes a dictionary to a file in JSON format.
@@ -73,16 +76,14 @@ def group(table):
 
     for idx, text in cleaned_vendor_descriptions.items():
         m = get_minhash(text)
-
         lsh.insert(str(idx), m)
-
         minhashes[str(idx)] = m
         
     # get graph edges
     all_edges = []
     for key in minhashes.keys():
         edges = [(key, x) for x in lsh.query(minhashes[key])]
-        all_edges += edges
+        all_edges.extend(edges)
 
     # create graph and find connected components from edges
     G = nx.Graph()
@@ -93,10 +94,6 @@ def group(table):
     table['group'] = -1
     for index, group in enumerate(connected_components):
         table.loc[[int(item) for item in list(group)], 'group'] = index
-
-    # x_dict = {table.loc[int(next(iter(group))), 'old_description']: list(group) for group in connected_components}
-    # with open("output.json", "w") as json_file:
-    #     json.dump(x_dict, json_file, indent=4)
 
     return
 
@@ -141,7 +138,9 @@ def classify(data, model_name):
     vendors_transactionType = transactions_simplified + ' ' + np.where(data['amount'] > 0, 'credit', 'debit')
     
     # classify chart of account for each transaction
-    file_path = os.path.join(os.getcwd(), "data", "tes71.joblib") # f"{model_name}.joblib"
+    file_path = os.path.join("/tmp",  f"{model_name}.joblib")
+    s3_client.download_file(os.environ.get("BUCKET_NAME"), model_name, file_path)
+
     loaded_pipeline = load(file_path)
     categories = loaded_pipeline.predict(vendors_transactionType)
     class_probabilities = loaded_pipeline.predict_proba(vendors_transactionType)
@@ -165,6 +164,7 @@ def classify(data, model_name):
     data = data.rename(columns={'description': 'old_description'})
     data['description'] = vendors_transactionType
     
+    deleteTmpFile(file_path)
     return data
 
 def get_category_totals(data):
@@ -201,27 +201,62 @@ def deleteTmpFile(filepath):
     else:
         return
 
+def get_template_access_level(user_id: int, template_id: int):
+    authorized = db.session.execute(sa.select(
+        models.UserTemplateAccess.access_level)
+        .where(and_(models.UserTemplateAccess.user_id == user_id, models.UserTemplateAccess.template_id == template_id)
+        )
+    ).scalar()
+
+    return authorized
+
 def train(train_data, model_name):
     """Trains learning model associated with a business template"""
     try:
-        with db.engine.begin() as connection:
-            data['vendor'] = get_fasttext_labels(model, data['new_description'], 0.75)
-        
-            # predict vendors
-            transactions_simplified = get_fasttext_labels(os.path.join(os.getcwd(), "data", "filex6.bin"), train_data["description"].str.strip(), 0.80)  #predictVendors(transactions_uncleaned, os.path.join(os.getcwd(), "data", "vendors2.joblib"), os.path.join(os.getcwd(), "data","ID_CategoryMap2.joblib"))
+        # predict vendors
+        transactions_simplified = get_fasttext_labels(os.path.join(os.getcwd(), "data", "filex6.bin"), train_data["description"].str.strip(), 0.80)
            
-            # label debit and credit transactions
-            vendors_and_transaction_type = transactions_simplified + ' ' +  np.where(train_data['amount'] > 0, 'credit', 'debit')
+        # label debit and credit transactions
+        vendors_and_transaction_type = transactions_simplified + ' ' +  np.where(train_data['amount'] > 0, 'credit', 'debit')
             
-            # train the classifier
-            pipeline = Pipeline([
-                ('tfidvect', TfidfVectorizer(stop_words='english')),
-                ('classifier', RandomForestClassifier(n_estimators=100, random_state=42))
-            ])
-
-            pipeline.fit(data['vendor'], data['account'])
+        # train the classifier
+        pipeline = Pipeline([
+            ('tfidvect', TfidfVectorizer(stop_words='english')),
+            ('classifier', RandomForestClassifier(n_estimators=100, random_state=42))
+        ])
         
-            # save full pipeline
-            dump(pipeline, os.path.join(os.getcwd(),'models', f"{model_name}.joblib"))
+        pipeline.fit(vendors_and_transaction_type, train_data['account'])
+        
+        # save full pipeline
+        file_path = os.path.join('/tmp', f"{model_name}.joblib")
+        dump(pipeline, file_path)
+
+        if upload_file(file_path, os.environ.get('BUCKET_NAME'), model_name):
+            deleteTmpFile(file_path)
+            return
+            
+        raise Exception("Couldn't save model")
     except Exception as e:
         raise
+
+#https://boto3.amazonaws.com/v1/documentation/api/latest/guide/s3-uploading-files.html
+def upload_file(file_name, bucket, object_name=None):
+    """Upload a file to an S3 bucket
+
+    :param file_name: File to upload
+    :param bucket: Bucket to upload to
+    :param object_name: S3 object name. If not specified then file_name is used
+    :return: True if file was uploaded, else False
+    """
+
+    # If S3 object_name was not specified, use file_name
+    if object_name is None:
+        object_name = os.path.basename(file_name)
+
+    # Upload the file
+    try:
+        response = s3_client.upload_file(file_name, os.environ.get("BUCKET_NAME"), object_name)
+    except ClientError as e:
+        print(e)
+        return False
+    return True

@@ -25,9 +25,11 @@ dist-ssr
 
 # api backend
 /project/venv*/
-/project/.flaskenv
+/project/.env
 *__pycache__
 /project/tls
 /project/tmp
 /project/run.sh
 /project/requirements_old.txt
+*.dump
+/project/profiler_dump
